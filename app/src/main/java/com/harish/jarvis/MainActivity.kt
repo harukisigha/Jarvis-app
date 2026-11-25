@@ -15,16 +15,21 @@ class MainActivity : Activity() {
     private lateinit var chat: TextView
     private lateinit var scroll: ScrollView
 
+    private fun turn(role: String, text: String): JSONObject =
+        JSONObject().put("role", role).put(
+            "parts", JSONArray().put(JSONObject().put("text", text))
+        )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val prefs = getSharedPreferences("jarvis", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("jarvis_gemini", Context.MODE_PRIVATE)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 90, 24, 24)
         }
         val keyBox = EditText(this).apply {
-            hint = "API key (sirf ek baar)"
+            hint = "Gemini API key (sirf ek baar)"
             setText(prefs.getString("key", ""))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
@@ -46,13 +51,14 @@ class MainActivity : Activity() {
             prefs.edit().putString("key", key).apply()
             input.setText("")
             append("Tum: $text")
-            history.put(JSONObject().put("role", "user").put("content", text))
+            history.put(turn("user", text))
             Thread {
                 try {
-                    val reply = callClaude(key)
-                    history.put(JSONObject().put("role", "assistant").put("content", reply))
+                    val reply = callGemini(key)
+                    history.put(turn("model", reply))
                     runOnUiThread { append("Jarvis: $reply") }
                 } catch (e: Exception) {
+                    history.remove(history.length() - 1)
                     runOnUiThread { append("Error: ${e.message}") }
                 }
             }.start()
@@ -64,28 +70,36 @@ class MainActivity : Activity() {
         scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
-    private fun callClaude(key: String): String {
-        val conn = URL("https://api.anthropic.com/v1/messages")
-            .openConnection() as HttpURLConnection
+    private fun callGemini(key: String): String {
+        val conn = URL(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+        ).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
-        conn.setRequestProperty("x-api-key", key)
-        conn.setRequestProperty("anthropic-version", "2023-06-01")
+        conn.setRequestProperty("x-goog-api-key", key)
         conn.setRequestProperty("content-type", "application/json")
         conn.connectTimeout = 30000
         conn.readTimeout = 60000
         conn.doOutput = true
 
+        val system = JSONObject().put(
+            "parts", JSONArray().put(
+                JSONObject().put(
+                    "text",
+                    "You are Jarvis, a personal assistant. Reply in casual Hinglish, short and helpful."
+                )
+            )
+        )
         val body = JSONObject()
-            .put("model", "claude-sonnet-4-6")
-            .put("max_tokens", 1000)
-            .put("system", "You are Jarvis, a personal assistant. Reply in casual Hinglish, short and helpful.")
-            .put("messages", history)
+            .put("system_instruction", system)
+            .put("contents", history)
         conn.outputStream.use { it.write(body.toString().toByteArray()) }
 
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val resp = stream.bufferedReader().readText()
         if (code !in 200..299) throw Exception("$code: $resp")
-        return JSONObject(resp).getJSONArray("content").getJSONObject(0).getString("text")
+        return JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
+            .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
+            .getString("text")
     }
 }
